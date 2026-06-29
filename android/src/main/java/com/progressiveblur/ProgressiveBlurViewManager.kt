@@ -46,4 +46,9 @@ class ProgressiveBlurViewManager : ViewGroupManager<ProgressiveBlurAndroidView>(
     fun setNumStops(view: ProgressiveBlurAndroidView, stops: Int) {
         view.setNumStops(stops)
     }
+
+    @ReactProp(name = "blurLength", defaultFloat = -1f)
+    fun setBlurLength(view: ProgressiveBlurAndroidView, length: Float) {
+        view.setBlurLength(length)
+    }
 }

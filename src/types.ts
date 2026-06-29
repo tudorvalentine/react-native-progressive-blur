@@ -1,7 +1,8 @@
 export type Easing = 'linear' | 'easeIn' | 'easeOut' | 'easeInOut';
 
 export type VerticalBlurConfig = {
-  type: 'vertical';
+  /** 'top-bottom': sharp at top, blurred at bottom. 'bottom-top': the reverse. 'vertical' is an alias for 'top-bottom'. */
+  type: 'vertical' | 'top-bottom' | 'bottom-top';
   blurRadiusPx: number;
   /** Y where blur starts. Default: top of view. */
   startY?: number;

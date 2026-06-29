@@ -5,7 +5,7 @@ import type { Easing } from './types';
 
 export type ProgressiveBlurViewProps = {
   /** Blur direction/mode. Default: 'vertical' */
-  blurType?: 'vertical' | 'horizontal' | 'radial';
+  blurType?: 'vertical' | 'top-bottom' | 'bottom-top' | 'horizontal' | 'radial';
   /**
    * Maximum blur radius in pixels (0–150).
    * Set to 0 to clear the effect. Default: 60
@@ -25,6 +25,11 @@ export type ProgressiveBlurViewProps = {
   easing?: Easing;
   /** Number of gradient stops — higher = smoother curve. Default: 20 */
   numStops?: number;
+  /**
+   * Limits the blur gradient to the first N dp of the view.
+   * Content beyond this point is fully clear. Default: -1 (full view height).
+   */
+  blurLength?: number;
   style?: StyleProp<ViewStyle>;
   children?: React.ReactNode;
 };
@@ -36,6 +41,7 @@ export function ProgressiveBlurView({
   endIntensity = 1,
   easing = 'easeIn',
   numStops = 20,
+  blurLength = -1,
   style,
   children,
 }: ProgressiveBlurViewProps) {
@@ -47,6 +53,7 @@ export function ProgressiveBlurView({
       endIntensity={endIntensity}
       easing={easing}
       numStops={numStops}
+      blurLength={blurLength}
       style={style}
     >
       {children}

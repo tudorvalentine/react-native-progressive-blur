@@ -14,6 +14,8 @@ export interface NativeProps extends ViewProps {
   endIntensity?: Float;
   easing?: WithDefault<string, 'easeIn'>;
   numStops?: Int32;
+  /** Limits the blur gradient to the first N dp. -1 = full view height (default). */
+  blurLength?: Float;
 }
 
 export default codegenNativeComponent<NativeProps>(

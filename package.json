@@ -1,6 +1,6 @@
 {
   "name": "react-native-progressive-blur",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A cross-platform library for real-time progressive blur effects on Android and iOS. It captures the content behind a view, applies GPU-accelerated blur, and supports mask-driven progressive blur, dynamic intensity, and custom shader effects.A cross-platform library for real-time glass and progressive blur effects on Android and iOS. It captures the content behind a view, applies GPU-accelerated blur, and supports mask-driven progressive blur, dynamic intensity, and custom shader effects.",
   "main": "./lib/module/index.js",
   "types": "./lib/typescript/src/index.d.ts",

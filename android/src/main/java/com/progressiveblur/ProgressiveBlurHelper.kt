@@ -81,6 +81,19 @@ object ProgressiveBlurHelper {
         }
     }
 
+    // Applies the effect to `view` but derives the gradient size from explicit w/h.
+    // Use this when the target view's own dimensions differ from the visible region
+    // (e.g. a content-sized ReactViewGroup inside a flex container).
+    fun applyWithSize(view: View, config: ProgressiveBlurConfig, w: Float, h: Float) {
+        if (Build.VERSION.SDK_INT >= 33) {
+            if (w <= 0f || h <= 0f) return
+            val (blurRadiusPx, maskShader) = resolveParams(view, config, w, h)
+            view.setRenderEffect(buildProgressiveRenderEffect(blurRadiusPx, w, h, maskShader))
+        } else if (Build.VERSION.SDK_INT >= 31) {
+            applyFallbackBlur(view, config)
+        }
+    }
+
     fun clear(view: View) {
         if (Build.VERSION.SDK_INT >= 31) {
             view.setRenderEffect(null)

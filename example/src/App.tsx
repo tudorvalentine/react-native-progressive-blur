@@ -1,9 +1,7 @@
-import { useCallback, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import {
   Dimensions,
   PanResponder,
-  Pressable,
-  SafeAreaView,
   ScrollView,
   StatusBar,
   StyleSheet,
@@ -13,23 +11,6 @@ import {
 import { ProgressiveBlurView } from 'react-native-progressive-blur';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
-
-// ─── Content ─────────────────────────────────────────────────────────────────
-
-const CARDS = [
-  { bg: '#FF6B6B', accent: '#C0392B', label: 'Tomato Red' },
-  { bg: '#FF9F43', accent: '#E17055', label: 'Sunset Orange' },
-  { bg: '#FFEAA7', accent: '#FDCB6E', label: 'Lemon Yellow' },
-  { bg: '#A29BFE', accent: '#6C5CE7', label: 'Lavender' },
-  { bg: '#74B9FF', accent: '#0984E3', label: 'Sky Blue' },
-  { bg: '#55EFC4', accent: '#00B894', label: 'Mint Green' },
-  { bg: '#FD79A8', accent: '#E84393', label: 'Hot Pink' },
-  { bg: '#B2BEC3', accent: '#636E72', label: 'Steel Gray' },
-  { bg: '#81ECEC', accent: '#00CEC9', label: 'Aqua' },
-  { bg: '#FDCB6E', accent: '#E17055', label: 'Amber' },
-  { bg: '#6C5CE7', accent: '#4A3FCB', label: 'Deep Purple' },
-  { bg: '#00B894', accent: '#00695C', label: 'Emerald' },
-];
 
 // ─── Slider ──────────────────────────────────────────────────────────────────
 
@@ -85,144 +66,411 @@ function RadiusSlider({
   );
 }
 
-// ─── App ─────────────────────────────────────────────────────────────────────
+// ─── Header ──────────────────────────────────────────────────────────────────
+// The background is blurred top→bottom with startIntensity=1 (fully blurred at
+// the top) fading to endIntensity=0 (sharp at the bottom).  The title text sits
+// outside the ProgressiveBlurView so it is always crisp.
 
-type BlurMode = 'vertical' | 'horizontal' | 'radial';
+const HEADER_HEIGHT = 90;
 
-const MODES: { label: string; mode: BlurMode }[] = [
-  { label: 'Vertical', mode: 'vertical' },
-  { label: 'Horizontal', mode: 'horizontal' },
-  { label: 'Radial', mode: 'radial' },
-];
-
-export default function App() {
-  const [activeMode, setActiveMode] = useState<BlurMode | null>(null);
-  const [radius, setRadius] = useState(60);
-
-  const handleClear = useCallback(() => setActiveMode(null), []);
-
-  const handleRadius = useCallback((r: number) => setRadius(r), []);
-
-  // blurRadius=0 tells the native view to clear the RenderEffect
-  const blurRadius = activeMode ? radius : 0;
-
+// The header is a transparent overlay — it carries no background of its own.
+// The ProgressiveBlurView wrapping the ScrollView blurs the scroll content
+// in the top HEADER_HEIGHT*1.5 dp zone, creating the frosted-glass effect.
+function Header() {
   return (
-    <SafeAreaView style={s.safe}>
-      <StatusBar barStyle="dark-content" backgroundColor="#fff" />
-
-      {/*
-       * ProgressiveBlurView wraps the scrollable content.
-       * The native FrameLayout applies setRenderEffect to itself,
-       * which blurs everything rendered inside it.
-       */}
-      <ProgressiveBlurView
-        blurType={activeMode ?? 'vertical'}
-        blurRadius={blurRadius}
-        startIntensity={0}
-        endIntensity={1}
-        easing="easeIn"
-        style={s.content}
-      >
-        <ScrollView
-          showsVerticalScrollIndicator={false}
-          contentContainerStyle={s.scrollContent}
-        >
-          {CARDS.map((card, i) => (
-            <View key={i} style={[s.card, { backgroundColor: card.bg }]}>
-              <View style={[s.circle, { backgroundColor: card.accent }]} />
-              <View style={s.cardInfo}>
-                <Text style={s.cardTitle}>{card.label}</Text>
-                <Text style={s.cardHex}>{card.bg}</Text>
-              </View>
-              <View style={[s.badge, { backgroundColor: card.accent }]}>
-                <Text style={s.badgeText}>{i + 1}</Text>
-              </View>
-            </View>
-          ))}
-        </ScrollView>
-      </ProgressiveBlurView>
-
-      {/* Controls */}
-      <View style={s.panel}>
-        <View style={s.panelHeader}>
-          <Text style={s.panelTitle}>Progressive Blur</Text>
-          {activeMode ? (
-            <Text style={s.modePill}>{activeMode}</Text>
-          ) : (
-            <Text style={s.modeNone}>none</Text>
-          )}
-        </View>
-
-        <View style={s.buttonRow}>
-          {MODES.map(({ label, mode }) => (
-            <Pressable
-              key={mode}
-              style={[s.btn, activeMode === mode && s.btnOn]}
-              onPress={() => setActiveMode(mode)}
-            >
-              <Text style={[s.btnLabel, activeMode === mode && s.btnLabelOn]}>
-                {label}
-              </Text>
-            </Pressable>
-          ))}
-          <Pressable style={s.btnClear} onPress={handleClear}>
-            <Text style={s.btnClearLabel}>Clear</Text>
-          </Pressable>
-        </View>
-
-        <View style={s.sliderRow}>
-          <Text style={s.sliderCaption}>Radius</Text>
-          <RadiusSlider value={radius} onValueChange={handleRadius} />
-          <Text style={s.sliderValue}>{radius}px</Text>
-        </View>
-      </View>
-    </SafeAreaView>
+    <View style={s.header} pointerEvents="none">
+      <Text style={s.headerTitle}>Progressive Blur</Text>
+      <Text style={s.headerSub}>React Native · Android demo</Text>
+    </View>
   );
 }
 
-// ─── Styles ──────────────────────────────────────────────────────────────────
+// ─── Cards ───────────────────────────────────────────────────────────────────
+// Each card wraps its content in renderToHardwareTextureAndroid so that nested
+// Fabric children are rasterised into a GPU texture before the parent's
+// hardware layer composites them through the RenderEffect.
 
-const s = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: '#fff' },
+function SocialCard() {
+  return (
+    <View style={c.socialCard} renderToHardwareTextureAndroid>
+      <View style={c.row}>
+        <View style={c.socialAvatar} />
+        <View>
+          <Text style={c.name}>Sarah K.</Text>
+          <Text style={c.meta}>2 min ago</Text>
+        </View>
+      </View>
+      <Text style={c.body}>
+        Just finished my morning run! Feeling amazing today 🏃‍♀️✨
+      </Text>
+      <View style={c.socialImage} />
+      <View style={c.row}>
+        <Text style={c.reactionLike}>❤️ 24</Text>
+        <Text style={c.reactionComment}>💬 6</Text>
+      </View>
+    </View>
+  );
+}
 
-  content: { flex: 1 },
-  scrollContent: { paddingHorizontal: 16, paddingTop: 12, paddingBottom: 8 },
+function MusicCard() {
+  return (
+    <View style={c.musicCard} renderToHardwareTextureAndroid>
+      <Text style={c.musicEyebrow}>Now Playing</Text>
+      <View style={c.musicAlbum}>
+        <Text style={c.musicNote}>♫</Text>
+      </View>
+      <Text style={c.trackTitle}>Midnight City</Text>
+      <Text style={c.trackArtist}>M83</Text>
+      <View style={c.progressTrack}>
+        <View style={c.musicProgressFill} />
+      </View>
+      <View style={c.rowBetween}>
+        <Text style={c.meta}>2:14</Text>
+        <Text style={c.meta}>3:48</Text>
+      </View>
+    </View>
+  );
+}
 
-  card: {
-    borderRadius: 18,
-    marginBottom: 10,
-    height: 110,
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 18,
-    overflow: 'hidden',
+function WeatherCard() {
+  return (
+    <View style={c.weatherCard} renderToHardwareTextureAndroid>
+      <Text style={c.weatherEyebrow}>San Francisco</Text>
+      <View style={c.weatherCenter}>
+        <Text style={c.weatherEmoji}>⛅</Text>
+        <Text style={c.temp}>24°</Text>
+        <Text style={c.conditions}>Partly Cloudy</Text>
+      </View>
+      <View style={c.rowAround}>
+        <View style={c.statBlock}>
+          <Text style={c.statVal}>62%</Text>
+          <Text style={c.statLbl}>Humidity</Text>
+        </View>
+        <View style={c.weatherDivider} />
+        <View style={c.statBlock}>
+          <Text style={c.statVal}>12</Text>
+          <Text style={c.statLbl}>km/h</Text>
+        </View>
+      </View>
+    </View>
+  );
+}
+
+function ActivityCard() {
+  return (
+    <View style={c.activityCard} renderToHardwareTextureAndroid>
+      <Text style={c.activityEyebrow}>Activity</Text>
+      <View style={c.ringWrap}>
+        <View style={c.activityRing}>
+          <Text style={c.activityPct}>82%</Text>
+        </View>
+        <Text style={c.activityGoal}>Goal reached</Text>
+      </View>
+      <View style={c.rowAround}>
+        <View style={c.statBlock}>
+          <Text style={c.activityStatVal}>8.2k</Text>
+          <Text style={c.statLbl}>Steps</Text>
+        </View>
+        <View style={c.activityDivider} />
+        <View style={c.statBlock}>
+          <Text style={c.activityStatVal}>420</Text>
+          <Text style={c.statLbl}>kcal</Text>
+        </View>
+      </View>
+    </View>
+  );
+}
+
+// ─── Grid config ─────────────────────────────────────────────────────────────
+
+type BlurType = 'top-bottom' | 'bottom-top' | 'horizontal' | 'radial';
+
+const ITEMS: { blurType: BlurType; label: string; content: React.ReactNode }[] =
+  [
+    {
+      blurType: 'top-bottom',
+      label: '↓ Top → Bottom',
+      content: <SocialCard />,
+    },
+    { blurType: 'bottom-top', label: '↑ Bottom → Top', content: <MusicCard /> },
+    { blurType: 'horizontal', label: '→ Horizontal', content: <WeatherCard /> },
+    { blurType: 'radial', label: '◎ Radial', content: <ActivityCard /> },
+  ];
+
+// ─── App ──────────────────────────────────────────────────────────────────────
+
+export default function App() {
+  const [radius, setRadius] = useState(20);
+
+  return (
+    <View style={s.safe}>
+      <StatusBar
+        barStyle="dark-content"
+        backgroundColor="transparent"
+        translucent
+      />
+
+      {/* Blur wrapper — blurs only the top HEADER_HEIGHT*1.5 dp so scroll
+          content entering the header zone fades into frosted glass */}
+      <ProgressiveBlurView
+        blurType="top-bottom"
+        blurRadius={radius}
+        startIntensity={0}
+        endIntensity={1}
+        easing="easeOut"
+        blurLength={HEADER_HEIGHT * 1.5}
+        style={s.blurWrapper}
+      >
+        <ScrollView
+          style={s.scroll}
+          contentContainerStyle={s.scrollContent}
+          showsVerticalScrollIndicator={false}
+        >
+          <View style={s.grid}>
+            {[0, 1].map((row) => (
+              <View key={row} style={s.gridRow}>
+                {[0, 1].map((col) => {
+                  const item = ITEMS[row * 2 + col]!;
+                  return (
+                    <View key={item.blurType} style={s.cellWrapper}>
+                      <ProgressiveBlurView
+                        blurType={item.blurType}
+                        blurRadius={radius}
+                        startIntensity={0}
+                        endIntensity={1}
+                        easing="easeIn"
+                        style={s.cell}
+                      >
+                        {item.content}
+                      </ProgressiveBlurView>
+                      <Text style={s.cellLabel}>{item.label}</Text>
+                    </View>
+                  );
+                })}
+              </View>
+            ))}
+            {[0, 1].map((row) => (
+              <View key={row} style={s.gridRow}>
+                {[0, 1].map((col) => {
+                  const item = ITEMS[row * 2 + col]!;
+                  return (
+                    <View key={item.blurType} style={s.cellWrapper}>
+                      <ProgressiveBlurView
+                        blurType={item.blurType}
+                        blurRadius={radius}
+                        startIntensity={0}
+                        endIntensity={1}
+                        easing="easeIn"
+                        style={s.cell}
+                      >
+                        {item.content}
+                      </ProgressiveBlurView>
+                      <Text style={s.cellLabel}>{item.label}</Text>
+                    </View>
+                  );
+                })}
+              </View>
+            ))}
+          </View>
+        </ScrollView>
+      </ProgressiveBlurView>
+
+      <Header />
+
+      <View style={s.panel}>
+        <Text style={s.panelTitle}>Blur radius</Text>
+        <View style={s.sliderRow}>
+          <Text style={s.sliderCaption}>Radius</Text>
+          <RadiusSlider value={radius} onValueChange={setRadius} />
+          <Text style={s.sliderValue}>{radius}px</Text>
+        </View>
+      </View>
+    </View>
+  );
+}
+
+// ─── Card styles ─────────────────────────────────────────────────────────────
+
+const c = StyleSheet.create({
+  // ── SocialCard ──
+  socialCard: { flex: 1, padding: 12, gap: 8, backgroundColor: '#fff5f5' },
+  socialAvatar: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: '#FF6B6B',
   },
-  circle: { width: 60, height: 60, borderRadius: 30, opacity: 0.85 },
-  cardInfo: { flex: 1, paddingLeft: 14 },
-  cardTitle: {
-    fontSize: 18,
+  socialImage: {
+    flex: 1,
+    borderRadius: 8,
+    minHeight: 40,
+    backgroundColor: '#FFAAAA',
+  },
+  reactionLike: { fontSize: 11, fontWeight: '600', color: '#FF6B6B' },
+  reactionComment: { fontSize: 11, fontWeight: '600', color: '#adb5bd' },
+
+  // ── MusicCard ──
+  musicCard: { flex: 1, padding: 12, gap: 8, backgroundColor: '#f0f7ff' },
+  musicEyebrow: {
+    fontSize: 11,
     fontWeight: '700',
-    color: '#fff',
-    textShadowColor: 'rgba(0,0,0,0.2)',
-    textShadowRadius: 6,
-    textShadowOffset: { width: 0, height: 1 },
+    letterSpacing: 0.3,
+    color: '#0984E3',
   },
-  cardHex: {
-    fontSize: 12,
-    color: 'rgba(255,255,255,0.7)',
-    marginTop: 3,
-    fontFamily: 'monospace',
-    letterSpacing: 1,
-  },
-  badge: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+  musicAlbum: {
+    alignSelf: 'center',
+    width: 52,
+    height: 52,
+    borderRadius: 10,
     alignItems: 'center',
     justifyContent: 'center',
+    backgroundColor: '#74B9FF',
   },
-  badgeText: { color: '#fff', fontWeight: '800', fontSize: 15 },
+  musicProgressFill: {
+    width: '60%',
+    height: 3,
+    borderRadius: 2,
+    backgroundColor: '#74B9FF',
+  },
+  rowBetween: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    justifyContent: 'space-between',
+  },
 
+  // ── WeatherCard ──
+  weatherCard: { flex: 1, padding: 12, gap: 8, backgroundColor: '#f0fff8' },
+  weatherEyebrow: {
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.3,
+    color: '#00B894',
+  },
+  weatherDivider: {
+    width: 1,
+    height: 28,
+    borderRadius: 1,
+    backgroundColor: '#b2f0dc',
+  },
+  rowAround: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    justifyContent: 'space-around',
+  },
+
+  // ── ActivityCard ──
+  activityCard: { flex: 1, padding: 12, gap: 8, backgroundColor: '#f8f5ff' },
+  activityEyebrow: {
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.3,
+    color: '#6C5CE7',
+  },
+  activityRing: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    borderWidth: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderColor: '#A29BFE',
+  },
+  activityPct: { fontSize: 16, fontWeight: '800', color: '#6C5CE7' },
+  activityGoal: { fontSize: 11, color: '#6C5CE7', textAlign: 'center' },
+  activityStatVal: { fontSize: 13, fontWeight: '700', color: '#6C5CE7' },
+  activityDivider: {
+    width: 1,
+    height: 28,
+    borderRadius: 1,
+    backgroundColor: '#c5b8fd',
+  },
+
+  // ── Shared ──
+  row: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  name: { fontSize: 12, fontWeight: '700', color: '#2d3436' },
+  meta: { fontSize: 10, color: '#adb5bd' },
+  body: { fontSize: 11, color: '#555', lineHeight: 16 },
+  musicNote: { fontSize: 22, color: '#fff' },
+  trackTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#2d3436',
+    textAlign: 'center',
+  },
+  trackArtist: { fontSize: 11, color: '#636e72', textAlign: 'center' },
+  progressTrack: {
+    height: 3,
+    backgroundColor: '#dfe6e9',
+    borderRadius: 2,
+    overflow: 'hidden',
+  },
+  weatherCenter: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 2,
+  },
+  weatherEmoji: { fontSize: 28 },
+  temp: { fontSize: 32, fontWeight: '800', color: '#2d3436' },
+  conditions: { fontSize: 11, color: '#636e72', textAlign: 'center' },
+  ringWrap: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 4 },
+  statBlock: { alignItems: 'center', gap: 2 },
+  statVal: { fontSize: 13, fontWeight: '700', color: '#2d3436' },
+  statLbl: {
+    fontSize: 9,
+    color: '#adb5bd',
+    textTransform: 'uppercase',
+    letterSpacing: 0.3,
+  },
+});
+
+// ─── Layout styles ────────────────────────────────────────────────────────────
+
+const s = StyleSheet.create({
+  // StatusBar.currentHeight is a synchronous static value on Android —
+  // unlike SafeAreaView's async inset measurement it is correct on frame 0,
+  // which prevents the header from overlapping the status bar on cold start.
+  safe: {
+    flex: 1,
+    backgroundColor: '#fff',
+    paddingTop: StatusBar.currentHeight ?? 0,
+  },
+
+  // Header — transparent overlay, title only; blur is on the content behind it
+  header: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    height: HEADER_HEIGHT,
+    zIndex: 10,
+    justifyContent: 'flex-end',
+    paddingHorizontal: 18,
+    paddingBottom: 14,
+  },
+  headerTitle: { fontSize: 20, fontWeight: '800', color: '#1a1a2e' },
+  headerSub: { fontSize: 12, color: 'rgba(0,0,0,0.5)', marginTop: 2 },
+
+  // ProgressiveBlurView wraps the ScrollView so the top blurLength dp are
+  // blurred — scroll content passing into that zone gets the frosted-glass look.
+  blurWrapper: { flex: 1 },
+  scroll: { flex: 1 },
+  scrollContent: { paddingTop: HEADER_HEIGHT },
+  grid: { padding: 12, gap: 12, paddingBottom: 24 },
+  gridRow: { flexDirection: 'row', gap: 12 },
+  cellWrapper: { flex: 1 },
+  cell: { height: 210, borderRadius: 16, overflow: 'hidden' },
+  cellLabel: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: '#868e96',
+    textAlign: 'center',
+    marginTop: 5,
+  },
+
+  // Panel
   panel: {
     backgroundColor: '#fff',
     borderTopWidth: StyleSheet.hairlineWidth,
@@ -230,52 +478,9 @@ const s = StyleSheet.create({
     paddingHorizontal: 20,
     paddingTop: 14,
     paddingBottom: 20,
-    gap: 14,
+    gap: 10,
   },
-  panelHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  panelTitle: { fontSize: 15, fontWeight: '700', color: '#212529' },
-  modePill: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#fff',
-    backgroundColor: '#212529',
-    paddingHorizontal: 10,
-    paddingVertical: 3,
-    borderRadius: 10,
-    overflow: 'hidden',
-    textTransform: 'capitalize',
-  },
-  modeNone: { fontSize: 12, color: '#adb5bd' },
-
-  buttonRow: { flexDirection: 'row', gap: 8 },
-  btn: {
-    flex: 1,
-    height: 38,
-    borderRadius: 19,
-    borderWidth: 1.5,
-    borderColor: '#ced4da',
-    backgroundColor: '#f8f9fa',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  btnOn: { backgroundColor: '#212529', borderColor: '#212529' },
-  btnLabel: { fontSize: 13, fontWeight: '600', color: '#495057' },
-  btnLabelOn: { color: '#fff' },
-  btnClear: {
-    flex: 1,
-    height: 38,
-    borderRadius: 19,
-    borderWidth: 1.5,
-    borderColor: '#fa5252',
-    backgroundColor: '#fff5f5',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  btnClearLabel: { fontSize: 13, fontWeight: '600', color: '#fa5252' },
+  panelTitle: { fontSize: 13, fontWeight: '700', color: '#212529' },
 
   sliderRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   sliderCaption: {
