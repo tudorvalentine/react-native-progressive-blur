@@ -116,7 +116,7 @@
   },
   "codegenConfig": {
     "name": "ProgressiveBlurSpec",
-    "type": "modules",
+    "type": "all",
     "jsSrcsDir": "src",
     "android": {
       "javaPackageName": "com.progressiveblur"

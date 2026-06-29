@@ -5,9 +5,10 @@ import com.facebook.react.bridge.NativeModule
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.module.model.ReactModuleInfo
 import com.facebook.react.module.model.ReactModuleInfoProvider
-import java.util.HashMap
+import com.facebook.react.uimanager.ViewManager
 
 class ProgressiveBlurPackage : BaseReactPackage() {
+
   override fun getModule(name: String, reactContext: ReactApplicationContext): NativeModule? {
     return if (name == ProgressiveBlurModule.NAME) {
       ProgressiveBlurModule(reactContext)
@@ -27,5 +28,11 @@ class ProgressiveBlurPackage : BaseReactPackage() {
         isTurboModule = true
       )
     )
+  }
+
+  override fun createViewManagers(
+    reactContext: ReactApplicationContext
+  ): MutableList<ViewManager<*, *>> {
+    return mutableListOf(ProgressiveBlurViewManager())
   }
 }

@@ -2,7 +2,13 @@
   "compilerOptions": {
     "rootDir": ".",
     "paths": {
-      "react-native-progressive-blur": ["./src/index"]
+      "react-native-progressive-blur": ["./src/index"],
+      "react-native/Libraries/Utilities/codegenNativeComponent": [
+        "./node_modules/react-native/Libraries/Utilities/codegenNativeComponent"
+      ],
+      "react-native/Libraries/Types/CodegenTypesNamespace": [
+        "./node_modules/react-native/Libraries/Types/CodegenTypesNamespace"
+      ]
     },
     "allowUnreachableCode": false,
     "allowUnusedLabels": false,
