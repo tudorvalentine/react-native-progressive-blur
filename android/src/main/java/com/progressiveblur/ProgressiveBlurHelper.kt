@@ -73,6 +73,8 @@ sealed class ProgressiveBlurConfig {
 
 object ProgressiveBlurHelper {
 
+    // ── View-based helpers (original API, kept for backward compat) ───────────
+
     fun apply(view: View, config: ProgressiveBlurConfig) {
         if (Build.VERSION.SDK_INT >= 33) {
             applyWithRuntimeShader(view, config)
@@ -81,13 +83,10 @@ object ProgressiveBlurHelper {
         }
     }
 
-    // Applies the effect to `view` but derives the gradient size from explicit w/h.
-    // Use this when the target view's own dimensions differ from the visible region
-    // (e.g. a content-sized ReactViewGroup inside a flex container).
     fun applyWithSize(view: View, config: ProgressiveBlurConfig, w: Float, h: Float) {
         if (Build.VERSION.SDK_INT >= 33) {
             if (w <= 0f || h <= 0f) return
-            val (blurRadiusPx, maskShader) = resolveParams(view, config, w, h)
+            val (blurRadiusPx, maskShader) = resolveParams(config, w, h)
             view.setRenderEffect(buildProgressiveRenderEffect(blurRadiusPx, w, h, maskShader))
         } else if (Build.VERSION.SDK_INT >= 31) {
             applyFallbackBlur(view, config)
@@ -100,6 +99,31 @@ object ProgressiveBlurHelper {
         }
     }
 
+    // ── RenderEffect builder (no View required) ───────────────────────────────
+    //
+    // Returns a RenderEffect that can be applied to any View or RenderNode.
+    // Used by ProgressiveBlurAndroidView for backdrop-blur mode.
+
+    fun buildEffect(config: ProgressiveBlurConfig, w: Float, h: Float): RenderEffect? {
+        if (w <= 0f || h <= 0f) return null
+        return when {
+            Build.VERSION.SDK_INT >= 33 -> {
+                val (blurRadiusPx, maskShader) = resolveParams(config, w, h)
+                buildProgressiveRenderEffect(blurRadiusPx, w, h, maskShader)
+            }
+            Build.VERSION.SDK_INT >= 31 -> {
+                // API 31-32 fallback: uniform blur (no gradient mask).
+                val r = when (config) {
+                    is ProgressiveBlurConfig.Vertical   -> config.blurRadiusPx
+                    is ProgressiveBlurConfig.Horizontal -> config.blurRadiusPx
+                    is ProgressiveBlurConfig.Radial     -> config.blurRadiusPx
+                }
+                RenderEffect.createBlurEffect(r, r, Shader.TileMode.CLAMP)
+            }
+            else -> null
+        }
+    }
+
     // ─── API 33+: two-pass separated Gaussian via RuntimeShader ──────────────
 
     @RequiresApi(33)
@@ -108,12 +132,12 @@ object ProgressiveBlurHelper {
         val h = view.height.toFloat()
         if (w <= 0f || h <= 0f) return
 
-        val (blurRadiusPx, maskShader) = resolveParams(view, config, w, h)
+        val (blurRadiusPx, maskShader) = resolveParams(config, w, h)
         view.setRenderEffect(buildProgressiveRenderEffect(blurRadiusPx, w, h, maskShader))
     }
 
     @RequiresApi(33)
-    private fun buildProgressiveRenderEffect(
+    internal fun buildProgressiveRenderEffect(
         blurRadiusPx: Float,
         width: Float,
         height: Float,
@@ -133,8 +157,7 @@ object ProgressiveBlurHelper {
 
     // ─── Mask creation ────────────────────────────────────────────────────────
 
-    private fun resolveParams(
-        view: View,
+    internal fun resolveParams(
         config: ProgressiveBlurConfig,
         w: Float,
         h: Float,
@@ -225,9 +248,9 @@ object ProgressiveBlurHelper {
     @RequiresApi(31)
     private fun applyFallbackBlur(view: View, config: ProgressiveBlurConfig) {
         val blurRadius = when (config) {
-            is ProgressiveBlurConfig.Vertical -> config.blurRadiusPx
+            is ProgressiveBlurConfig.Vertical   -> config.blurRadiusPx
             is ProgressiveBlurConfig.Horizontal -> config.blurRadiusPx
-            is ProgressiveBlurConfig.Radial -> config.blurRadiusPx
+            is ProgressiveBlurConfig.Radial     -> config.blurRadiusPx
         }
         view.setRenderEffect(
             RenderEffect.createBlurEffect(blurRadius, blurRadius, Shader.TileMode.CLAMP)
