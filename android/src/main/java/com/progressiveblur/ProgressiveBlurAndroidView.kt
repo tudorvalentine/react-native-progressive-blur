@@ -48,6 +48,33 @@ class ProgressiveBlurAndroidView(context: Context) : ReactViewGroup(context) {
     /** Sibling views that sit behind us — we own their RenderEffect while attached. */
     private val blurTargets = mutableListOf<View>()
 
+    /**
+     * Named runnable so we can cancel it in onDetachedFromWindow.
+     * Posted (not called directly) from onAttachedToWindow so that Fabric finishes
+     * inserting all siblings from the same commit before we scan.
+     */
+    private val findTargetsRunnable = Runnable { findTargets() }
+
+    /**
+     * Watches the parent for sibling add/remove events so we can re-apply the
+     * effect when a blur target is recreated (e.g. pull-to-refresh rebuilds the
+     * ScrollView native view).
+     */
+    private val parentHierarchyListener = object : ViewGroup.OnHierarchyChangeListener {
+        override fun onChildViewAdded(parent: View, child: View) {
+            if (child !== this@ProgressiveBlurAndroidView) {
+                // A new sibling appeared — re-discover all targets and re-apply.
+                findTargets()
+            }
+        }
+        override fun onChildViewRemoved(parent: View, child: View) {
+            if (blurTargets.remove(child)) {
+                // Clear effect on the departing view before it is detached.
+                if (Build.VERSION.SDK_INT >= 31) child.setRenderEffect(null)
+            }
+        }
+    }
+
     init {
         setLayerType(LAYER_TYPE_HARDWARE, null)
     }
@@ -60,25 +87,35 @@ class ProgressiveBlurAndroidView(context: Context) : ReactViewGroup(context) {
     fun setEndIntensity(v: Float)    { endIntensity   = v.coerceIn(0f, 1f); applyEffect() }
     fun setEasing(n: String)         { easing = n;                           applyEffect() }
     fun setNumStops(s: Int)          { numStops = s.coerceAtLeast(2);        applyEffect() }
-    fun setBlurLength(l: Float)      { blurLength = l;                       applyEffect() }
+    fun setBlurLength(l: Float)      { blurLength = if (l < 0f) l else l * resources.displayMetrics.density; applyEffect() }
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
 
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
-        findTargets()
+        (parent as? ViewGroup)?.setOnHierarchyChangeListener(parentHierarchyListener)
+        // Defer to next frame: Fabric may still be inserting other siblings from the
+        // same commit batch when this fires, so a direct findTargets() call would see
+        // an incomplete child list and leave blurTargets empty on cold start.
+        post(findTargetsRunnable)
     }
 
     override fun onDetachedFromWindow() {
-        super.onDetachedFromWindow()
+        (parent as? ViewGroup)?.setOnHierarchyChangeListener(null)
+        removeCallbacks(findTargetsRunnable)
         clearEffect()
         blurTargets.clear()
+        super.onDetachedFromWindow()
     }
 
     // onSizeChanged: bounds are now known — safe to build and apply the effect.
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
-        if (w > 0 && h > 0) applyEffect()
+        if (w > 0 && h > 0) {
+            // If the posted findTargets() hasn't run yet (or found nothing), retry
+            // here so the effect is applied as soon as dimensions are available.
+            if (blurTargets.isEmpty()) findTargets() else applyEffect()
+        }
     }
 
     // ── Target discovery ─────────────────────────────────────────────────────
@@ -99,8 +136,11 @@ class ProgressiveBlurAndroidView(context: Context) : ReactViewGroup(context) {
     private fun applyEffect() {
         if (Build.VERSION.SDK_INT < 31 || blurTargets.isEmpty() || width <= 0 || height <= 0) return
 
+        // When blurLength extends beyond the view's own height the Gaussian kernel
+        // needs the larger crop so it can sample symmetrically past the view edge.
+        val effectH = if (blurLength > height) blurLength else height.toFloat()
         val effect: RenderEffect? = if (blurRadius > 0f) {
-            ProgressiveBlurHelper.buildEffect(buildConfig(), width.toFloat(), height.toFloat())
+            ProgressiveBlurHelper.buildEffect(buildConfig(), width.toFloat(), effectH)
         } else {
             null
         }
