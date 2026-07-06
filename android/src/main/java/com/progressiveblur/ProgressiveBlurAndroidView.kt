@@ -1,39 +1,40 @@
 package com.progressiveblur
 
 import android.content.Context
-import android.graphics.RenderEffect
+import android.graphics.Canvas
+import android.graphics.RenderNode
 import android.os.Build
 import android.view.View
 import android.view.ViewGroup
 import com.facebook.react.views.view.ReactViewGroup
 
 /**
- * Backdrop-blur container — GPU-native, zero CPU capture.
+ * Progressive backdrop-blur container — live per-frame recapture.
  *
- * Instead of capturing a bitmap of what's behind this view (which requires a
- * full software re-render of the view tree on every scroll frame), this view
- * applies a [RenderEffect] directly to each sibling that sits behind it in the
- * parent's z-order.
+ * The earlier approach applied a [android.graphics.RenderEffect] statically to the
+ * sibling views behind this one. On the New Architecture (Fabric) that effect does
+ * NOT composite over freshly-mounted content — it only "takes" after a real window
+ * detach/reattach (i.e. navigating away and back), and every Fabric re-commit (data
+ * load, pull-to-refresh) drops it again. No redraw / invalidate / layer toggle fixes
+ * it (all verified on device).
  *
- * Why this works for scrolling:
- *   RenderEffect is applied in the target view's LOCAL coordinate space.
- *   For a ScrollView, local y=0 is always the top of the *visible* area —
- *   independent of scroll position.  So the blur gradient (y=0 → full blur,
- *   y=height → clear) always covers the region behind the header, and the GPU
- *   re-applies it automatically every frame at zero CPU cost.
+ * So instead we own the effect ourselves, like a classic backdrop blur but on the GPU:
+ * every frame we re-record the sibling views that sit behind us into our own
+ * [RenderNode], apply the progressive gradient-masked blur shader to that node, and
+ * draw it as our background before our (sharp) header children. Because it re-records
+ * each frame, cold start, scrolling and pull-to-refresh are all reflected automatically
+ * — there is no frozen effect to go stale.
  *
- * Requires API 33 (Android 13) for the RuntimeShader / gradient-mask path.
- * On API 31–32 a uniform-radius blur is applied as a degraded fallback.
- * Below API 31 no blur is rendered.
- *
- * Usage (same as before — no JS-side change needed):
+ * Layout stays the same (blur view is a sibling drawn on top of the content):
  *
  *   <View>
- *     <ScrollView />            ← sibling behind — gets the RenderEffect
+ *     <ScrollView />            ← sibling behind — captured & blurred each frame
  *     <ProgressiveBlurView>
  *       <Header />              ← children drawn on top, always sharp
  *     </ProgressiveBlurView>
  *   </View>
+ *
+ * Requires API 31+ (RenderEffect / RuntimeShader). Below that no blur is drawn.
  */
 class ProgressiveBlurAndroidView(context: Context) : ReactViewGroup(context) {
 
@@ -45,148 +46,140 @@ class ProgressiveBlurAndroidView(context: Context) : ReactViewGroup(context) {
     private var numStops: Int = 10
     private var blurLength: Float = -1f
 
-    /** Sibling views that sit behind us — we own their RenderEffect while attached. */
-    private val blurTargets = mutableListOf<View>()
+    private val supported = Build.VERSION.SDK_INT >= 31
+    private val blurNode: RenderNode? =
+        if (Build.VERSION.SDK_INT >= 29) RenderNode("progressiveBlur") else null
+
+    /** Guards against re-entrancy while we draw the sibling views into [blurNode]. */
+    private var capturing = false
+
+    // No self-invalidation: when the content behind us changes (scroll, refresh, data
+    // load) the system marks our on-screen region dirty and redraws us, and dispatchDraw
+    // re-captures the fresh backdrop then. A permanent per-frame self-invalidate (an
+    // earlier approach) pinned the UI thread at ~19ms/frame and made hard scrolling
+    // judder, for no benefit — natural invalidation already covers every change.
 
     /**
-     * Named runnable so we can cancel it in onDetachedFromWindow.
-     * Posted (not called directly) from onAttachedToWindow so that Fabric finishes
-     * inserting all siblings from the same commit before we scan.
+     * Capture + blur at 1/N resolution. The result is upscaled when drawn; since it is
+     * blurred anyway the quality loss is invisible, but the two-pass Gaussian costs
+     * ~N² fewer pixels — the difference between smooth scrolling and jank.
+     *
+     * Kept at 2 (not higher): a larger factor snaps the captured backdrop to an N-px
+     * grid, so while scrolling the blurred content steps in N-px jumps and visibly
+     * judders against the sharp content. 2 halves that to sub-pixel-invisible while
+     * still cutting the blur cost ~4×.
      */
-    private val findTargetsRunnable = Runnable { findTargets() }
-
-    /**
-     * Watches the parent for sibling add/remove events so we can re-apply the
-     * effect when a blur target is recreated (e.g. pull-to-refresh rebuilds the
-     * ScrollView native view).
-     */
-    private val parentHierarchyListener = object : ViewGroup.OnHierarchyChangeListener {
-        override fun onChildViewAdded(parent: View, child: View) {
-            if (child !== this@ProgressiveBlurAndroidView) {
-                // A new sibling appeared — re-discover all targets and re-apply.
-                findTargets()
-            }
-        }
-        override fun onChildViewRemoved(parent: View, child: View) {
-            if (blurTargets.remove(child)) {
-                // Clear effect on the departing view before it is detached.
-                if (Build.VERSION.SDK_INT >= 31) child.setRenderEffect(null)
-            }
-        }
-    }
+    private val downsample = 2
 
     init {
-        setLayerType(LAYER_TYPE_HARDWARE, null)
+        // We paint our own content (the backdrop) in dispatchDraw.
+        setWillNotDraw(false)
     }
 
     // ── Prop setters ─────────────────────────────────────────────────────────
 
-    fun setBlurRadius(r: Float)      { blurRadius = r.coerceIn(0f, 150f);  applyEffect() }
-    fun setBlurType(t: String)       { blurType = t;                        applyEffect() }
-    fun setStartIntensity(v: Float)  { startIntensity = v.coerceIn(0f, 1f); applyEffect() }
-    fun setEndIntensity(v: Float)    { endIntensity   = v.coerceIn(0f, 1f); applyEffect() }
-    fun setEasing(n: String)         { easing = n;                           applyEffect() }
-    fun setNumStops(s: Int)          { numStops = s.coerceAtLeast(2);        applyEffect() }
-    fun setBlurLength(l: Float)      { blurLength = if (l < 0f) l else l * resources.displayMetrics.density; applyEffect() }
+    fun setBlurRadius(r: Float)      { blurRadius = r.coerceIn(0f, 150f);  invalidate() }
+    fun setBlurType(t: String)       { blurType = t;                        invalidate() }
+    fun setStartIntensity(v: Float)  { startIntensity = v.coerceIn(0f, 1f); invalidate() }
+    fun setEndIntensity(v: Float)    { endIntensity   = v.coerceIn(0f, 1f); invalidate() }
+    fun setEasing(n: String)         { easing = n;                          invalidate() }
+    fun setNumStops(s: Int)          { numStops = s.coerceAtLeast(2);       invalidate() }
+    fun setBlurLength(l: Float)      { blurLength = if (l < 0f) l else l * resources.displayMetrics.density; invalidate() }
 
-    // ── Lifecycle ─────────────────────────────────────────────────────────────
+    // ── Backdrop capture + draw ────────────────────────────────────────────────
 
-    override fun onAttachedToWindow() {
-        super.onAttachedToWindow()
-        (parent as? ViewGroup)?.setOnHierarchyChangeListener(parentHierarchyListener)
-        // Defer to next frame: Fabric may still be inserting other siblings from the
-        // same commit batch when this fires, so a direct findTargets() call would see
-        // an incomplete child list and leave blurTargets empty on cold start.
-        post(findTargetsRunnable)
+    override fun dispatchDraw(canvas: Canvas) {
+        drawBackdrop(canvas)
+        super.dispatchDraw(canvas)
     }
 
-    override fun onDetachedFromWindow() {
-        (parent as? ViewGroup)?.setOnHierarchyChangeListener(null)
-        removeCallbacks(findTargetsRunnable)
-        clearEffect()
-        blurTargets.clear()
-        super.onDetachedFromWindow()
-    }
-
-    // onSizeChanged: bounds are now known — safe to build and apply the effect.
-    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
-        super.onSizeChanged(w, h, oldw, oldh)
-        if (w > 0 && h > 0) {
-            // If the posted findTargets() hasn't run yet (or found nothing), retry
-            // here so the effect is applied as soon as dimensions are available.
-            if (blurTargets.isEmpty()) findTargets() else applyEffect()
-        }
-    }
-
-    // ── Target discovery ─────────────────────────────────────────────────────
-
-    /** Collects sibling views that are behind this view in the parent's z-order. */
-    private fun findTargets() {
-        blurTargets.clear()
+    private fun drawBackdrop(canvas: Canvas) {
+        val node = blurNode ?: return
+        if (!supported || !canvas.isHardwareAccelerated) return
+        val w = width
+        val h = height
+        if (w <= 0 || h <= 0 || blurRadius <= 0f) return
         val parent = this.parent as? ViewGroup ?: return
         val myIndex = parent.indexOfChild(this)
-        for (i in 0 until myIndex) {
-            blurTargets.add(parent.getChildAt(i))
+        if (myIndex <= 0) return // nothing behind us to blur
+
+        val f = downsample
+        val nw = (w / f).coerceAtLeast(1)
+        val nh = (h / f).coerceAtLeast(1)
+
+        // Re-record the siblings behind us into our node at 1/f resolution, mapped so
+        // the parent region directly behind this view lands at the node's (0,0) origin.
+        node.setPosition(0, 0, nw, nh)
+        val rc = node.beginRecording(nw, nh)
+        capturing = true
+        try {
+            rc.scale(1f / f, 1f / f)
+            // Only the strip behind the header is needed; clipping lets the recorder
+            // skip the (tall) off-strip content of the ScrollView entirely.
+            rc.clipRect(0f, 0f, w.toFloat(), h.toFloat())
+            for (i in 0 until myIndex) {
+                val child = parent.getChildAt(i)
+                if (child.visibility != View.VISIBLE) continue
+                rc.save()
+                rc.translate((child.left - left).toFloat(), (child.top - top).toFloat())
+                child.draw(rc)
+                rc.restore()
+            }
+        } finally {
+            capturing = false
+            node.endRecording()
         }
-        applyEffect()
-    }
 
-    // ── Effect application ───────────────────────────────────────────────────
+        node.setRenderEffect(
+            ProgressiveBlurHelper.buildEffect(buildConfig(f), nw.toFloat(), nh.toFloat())
+        )
 
-    private fun applyEffect() {
-        if (Build.VERSION.SDK_INT < 31 || blurTargets.isEmpty() || width <= 0 || height <= 0) return
-
-        // When blurLength extends beyond the view's own height the Gaussian kernel
-        // needs the larger crop so it can sample symmetrically past the view edge.
-        val effectH = if (blurLength > height) blurLength else height.toFloat()
-        val effect: RenderEffect? = if (blurRadius > 0f) {
-            ProgressiveBlurHelper.buildEffect(buildConfig(), width.toFloat(), effectH)
-        } else {
-            null
-        }
-        blurTargets.forEach { it.setRenderEffect(effect) }
-    }
-
-    private fun clearEffect() {
-        if (Build.VERSION.SDK_INT < 31) return
-        blurTargets.forEach { it.setRenderEffect(null) }
+        canvas.save()
+        canvas.scale(f.toFloat(), f.toFloat())
+        canvas.drawRenderNode(node)
+        canvas.restore()
     }
 
     // ── Config ────────────────────────────────────────────────────────────────
 
-    private fun resolvedEndY(): Float =
-        if (blurLength > 0f) blurLength else Float.POSITIVE_INFINITY
+    private fun resolvedEndY(scale: Int): Float =
+        if (blurLength > 0f) blurLength / scale else Float.POSITIVE_INFINITY
 
-    private fun buildConfig(): ProgressiveBlurConfig = when (blurType) {
-        "horizontal" -> ProgressiveBlurConfig.Horizontal(
-            blurRadiusPx = blurRadius,
-            startIntensity = startIntensity,
-            endIntensity = endIntensity,
-            easing = Easing.fromString(easing),
-            numStops = numStops,
-        )
-        "radial" -> ProgressiveBlurConfig.Radial(
-            blurRadiusPx = blurRadius,
-            centerIntensity = startIntensity,
-            edgeIntensity = endIntensity,
-            easing = Easing.fromString(easing),
-            numStops = numStops,
-        )
-        "top-bottom" -> ProgressiveBlurConfig.Vertical(
-            blurRadiusPx = blurRadius,
-            endY = resolvedEndY(),
-            startIntensity = endIntensity,   // swap: heaviest at y=0
-            endIntensity = startIntensity,
-            easing = Easing.fromString(easing),
-            numStops = numStops,
-        )
-        else -> ProgressiveBlurConfig.Vertical(
-            blurRadiusPx = blurRadius,
-            endY = resolvedEndY(),
-            startIntensity = startIntensity,
-            endIntensity = endIntensity,
-            easing = Easing.fromString(easing),
-            numStops = numStops,
-        )
+    /** Spatial params (radius, gradient extent) are divided by [scale] to match the
+     *  down-sampled node; intensities/stops are resolution-independent. */
+    private fun buildConfig(scale: Int): ProgressiveBlurConfig {
+        val r = blurRadius / scale
+        return when (blurType) {
+            "horizontal" -> ProgressiveBlurConfig.Horizontal(
+                blurRadiusPx = r,
+                startIntensity = startIntensity,
+                endIntensity = endIntensity,
+                easing = Easing.fromString(easing),
+                numStops = numStops,
+            )
+            "radial" -> ProgressiveBlurConfig.Radial(
+                blurRadiusPx = r,
+                centerIntensity = startIntensity,
+                edgeIntensity = endIntensity,
+                easing = Easing.fromString(easing),
+                numStops = numStops,
+            )
+            "top-bottom" -> ProgressiveBlurConfig.Vertical(
+                blurRadiusPx = r,
+                endY = resolvedEndY(scale),
+                startIntensity = endIntensity,   // swap: heaviest at y=0
+                endIntensity = startIntensity,
+                easing = Easing.fromString(easing),
+                numStops = numStops,
+            )
+            else -> ProgressiveBlurConfig.Vertical(
+                blurRadiusPx = r,
+                endY = resolvedEndY(scale),
+                startIntensity = startIntensity,
+                endIntensity = endIntensity,
+                easing = Easing.fromString(easing),
+                numStops = numStops,
+            )
+        }
     }
 }
