@@ -16,6 +16,8 @@ export interface NativeProps extends ViewProps {
   numStops?: Int32;
   /** Limits the blur gradient to the first N dp. -1 = full view height (default). */
   blurLength?: Float;
+  /** Android: blur this view's own children (wrapper mode) instead of the backdrop. */
+  selfBlur?: WithDefault<boolean, false>;
 }
 
 export default codegenNativeComponent<NativeProps>(

@@ -2,10 +2,14 @@ package com.progressiveblur
 
 import android.content.Context
 import android.graphics.Canvas
+import android.graphics.LinearGradient
+import android.graphics.Paint
 import android.graphics.RenderNode
+import android.graphics.Shader
 import android.os.Build
 import android.view.View
 import android.view.ViewGroup
+import android.view.ViewTreeObserver
 import com.facebook.react.views.view.ReactViewGroup
 
 /**
@@ -50,7 +54,7 @@ class ProgressiveBlurAndroidView(context: Context) : ReactViewGroup(context) {
     private val blurNode: RenderNode? =
         if (Build.VERSION.SDK_INT >= 29) RenderNode("progressiveBlur") else null
 
-    /** Guards against re-entrancy while we draw the sibling views into [blurNode]. */
+    /** Guards against re-entrancy while we draw the backdrop into [blurNode]. */
     private var capturing = false
 
     // No self-invalidation: when the content behind us changes (scroll, refresh, data
@@ -71,26 +75,108 @@ class ProgressiveBlurAndroidView(context: Context) : ReactViewGroup(context) {
      */
     private val downsample = 2
 
+    /**
+     * A scrolling backdrop (e.g. the chat's inverted list) may update on the render
+     * thread without dirtying our on-screen region, which would freeze the blur
+     * mid-scroll. This fires on any scroll in the tree and re-captures. Cheap — only
+     * during actual scrolling, not every idle frame.
+     */
+    private val scrollListener = ViewTreeObserver.OnScrollChangedListener {
+        if (supported && blurRadius > 0f) invalidate()
+    }
+
     init {
         // We paint our own content (the backdrop) in dispatchDraw.
         setWillNotDraw(false)
     }
 
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        viewTreeObserver.addOnScrollChangedListener(scrollListener)
+    }
+
+    override fun onDetachedFromWindow() {
+        viewTreeObserver.removeOnScrollChangedListener(scrollListener)
+        super.onDetachedFromWindow()
+    }
+
+    /**
+     * Self-blur mode: instead of capturing siblings behind us, this view wraps the
+     * content and applies the progressive [android.graphics.RenderEffect] to ITSELF
+     * (so its children are blurred). RenderEffect on a view is GPU-live — scrolling and
+     * transforms (inverted lists) are reflected without capture — the trade-off being
+     * the possible Fabric cold-start compositing quirk. Used for chat where the content
+     * is an inverted list that the capture path can't handle.
+     */
+    private var selfBlur = false
+
     // ── Prop setters ─────────────────────────────────────────────────────────
 
-    fun setBlurRadius(r: Float)      { blurRadius = r.coerceIn(0f, 150f);  invalidate() }
-    fun setBlurType(t: String)       { blurType = t;                        invalidate() }
-    fun setStartIntensity(v: Float)  { startIntensity = v.coerceIn(0f, 1f); invalidate() }
-    fun setEndIntensity(v: Float)    { endIntensity   = v.coerceIn(0f, 1f); invalidate() }
-    fun setEasing(n: String)         { easing = n;                          invalidate() }
-    fun setNumStops(s: Int)          { numStops = s.coerceAtLeast(2);       invalidate() }
-    fun setBlurLength(l: Float)      { blurLength = if (l < 0f) l else l * resources.displayMetrics.density; invalidate() }
+    fun setBlurRadius(r: Float)      { blurRadius = r.coerceIn(0f, 150f);  refresh() }
+    fun setBlurType(t: String)       { blurType = t;                        refresh() }
+    fun setStartIntensity(v: Float)  { startIntensity = v.coerceIn(0f, 1f); refresh() }
+    fun setEndIntensity(v: Float)    { endIntensity   = v.coerceIn(0f, 1f); refresh() }
+    fun setEasing(n: String)         { easing = n;                          refresh() }
+    fun setNumStops(s: Int)          { numStops = s.coerceAtLeast(2);       refresh() }
+    fun setBlurLength(l: Float)      { blurLength = if (l < 0f) l else l * resources.displayMetrics.density; refresh() }
+    fun setSelfBlur(v: Boolean)      { selfBlur = v; if (!v && supported) setRenderEffect(null); refresh() }
+
+    private fun refresh() {
+        if (selfBlur) applySelfEffect() else invalidate()
+    }
+
+    /** Applies the progressive effect to this view itself (self-blur mode). */
+    private fun applySelfEffect() {
+        if (!selfBlur || !supported) return
+        val w = width
+        val h = height
+        if (w <= 0 || h <= 0) return
+        val effectH = if (blurLength > h) blurLength else h.toFloat()
+        val effect = if (blurRadius > 0f)
+            ProgressiveBlurHelper.buildEffect(buildConfig(1), w.toFloat(), effectH) else null
+        setRenderEffect(effect)
+    }
+
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        if (selfBlur) applySelfEffect()
+    }
 
     // ── Backdrop capture + draw ────────────────────────────────────────────────
 
     override fun dispatchDraw(canvas: Canvas) {
-        drawBackdrop(canvas)
+        // API < 31 has no RenderEffect — fall back to a plain dark→transparent gradient
+        // scrim so the header still has a readable backing (drawn behind the header in
+        // overlay mode, over the content in self-blur mode).
+        if (!supported) {
+            if (selfBlur) {
+                super.dispatchDraw(canvas)
+                drawFallbackScrim(canvas)
+            } else {
+                drawFallbackScrim(canvas)
+                super.dispatchDraw(canvas)
+            }
+            return
+        }
+        if (!selfBlur) drawBackdrop(canvas)
         super.dispatchDraw(canvas)
+    }
+
+    private val fallbackPaint = Paint()
+
+    /** Dark→transparent gradient shown on API < 31 where GPU blur is unavailable. */
+    private fun drawFallbackScrim(canvas: Canvas) {
+        if (blurRadius <= 0f) return
+        val w = width
+        val h = height
+        if (w <= 0 || h <= 0) return
+        val end = if (blurLength > 0f) blurLength else h.toFloat()
+        // Matches the app's legacy fallback: rgba(12,15,18) opaque at top → clear.
+        fallbackPaint.shader = LinearGradient(
+            0f, 0f, 0f, end,
+            0xE60C0F12.toInt(), 0x000C0F12, Shader.TileMode.CLAMP,
+        )
+        canvas.drawRect(0f, 0f, w.toFloat(), end, fallbackPaint)
     }
 
     private fun drawBackdrop(canvas: Canvas) {
@@ -122,6 +208,10 @@ class ProgressiveBlurAndroidView(context: Context) : ReactViewGroup(context) {
                 if (child.visibility != View.VISIBLE) continue
                 rc.save()
                 rc.translate((child.left - left).toFloat(), (child.top - top).toFloat())
+                // View.draw(canvas) skips the view's OWN transform (normally applied by
+                // the parent's drawChild). Apply it here so e.g. an inverted chat list's
+                // scaleY(-1) is honoured and the capture isn't mirrored.
+                rc.concat(child.matrix)
                 child.draw(rc)
                 rc.restore()
             }

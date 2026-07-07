@@ -30,6 +30,8 @@ export type ProgressiveBlurViewProps = {
    * Content beyond this point is fully clear. Default: -1 (full view height).
    */
   blurLength?: number;
+  /** Android: blur this view's own children (wrapper mode) instead of the backdrop. */
+  selfBlur?: boolean;
   style?: StyleProp<ViewStyle>;
   children?: React.ReactNode;
 };
@@ -42,6 +44,7 @@ export function ProgressiveBlurView({
   easing = 'easeIn',
   numStops = 20,
   blurLength = -1,
+  selfBlur = false,
   style,
   children,
 }: ProgressiveBlurViewProps) {
@@ -54,6 +57,7 @@ export function ProgressiveBlurView({
       easing={easing}
       numStops={numStops}
       blurLength={blurLength}
+      selfBlur={selfBlur}
       style={style}
     >
       {children}
